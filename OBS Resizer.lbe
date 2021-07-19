@@ -1,0 +1,572 @@
+[extension_name]
+OBS Resizer
+[insert_external]
+<!--
+ * @name: OBS Resizer, @version: 1.0, @author: Christinna K, @link: https://christinak.itch.io
+ * -->
+<div><p>OBS Resizer is installed</p></div>
+ <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/obs-websocket-js@4.0.2/dist/obs-websocket.js"></script>
+[insert_command]
+lioranboardclient.send('{"type":"MESSAGE","topic":"ExtensionCommand","name":"OBS Resizer","boxcount":5,"boxname1":"obsws_port","boxtype1":"real","boxname2":"obsws_password","boxtype2":"string","boxname3":"scene_name","boxtype3":"string","boxname4":"original_width","boxtype4":"real","boxname5":"new_width","boxtype5":"real"}');   
+[insert_hook]
+case "OBSResizer":{  
+    LBResizeAll (LioranBoardJSON.obsws_port, LioranBoardJSON.obsws_password, LioranBoardJSON.scene_name, LioranBoardJSON.original_width, LioranBoardJSON.new_width)
+    }break
+[insert_script]
+function LBResizeAll(port, pw, sceneName, origRes, newRes) {
+  const scale = newRes / origRes;
+  const obs = new OBSWebSocket();
+
+  StartListening();
+
+  async function RequestInfo(scene) {
+    const GetItems = await obs.send('ExecuteBatch', { requests: [{ 'request-type': 'GetSceneItemList', sceneName: scene }, { 'request-type': 'GetSourceFilters', sourceName: scene }] });
+    if (GetItems.results[0].error || GetItems.results[1].error) {
+      ChangeStatus(GetItems.results[0].error || GetItems.results[1].error); return;
+    }
+    Promise.all([transformSources(GetItems.results[0]), moveFilters(GetItems.results[1]), cropFilters(GetItems.results[1])])
+      .then(() => {
+        obs.send('SetSourceSettings', { sourceName: scene, sourceSettings: { OrigRes: newRes } });
+      })
+      .catch((e) => ChangeStatus(e));
+
+    async function transformSources(data) {
+      const GetSourceArray = [];
+      const SetSourceArray = [];
+	  const SceneArray = [];
+      if (data.sceneItems.length === 0) return;
+      data.sceneItems.forEach((e) => {
+        if (e.sourceKind === 'scene') {
+         
+          SceneArray.push(e.itemId);
+		  setTimeout(() => {
+		  RequestInfo(e.sourceName);
+		  }, 100);
+        }
+        GetSourceArray.push({ 'request-type': 'GetSceneItemProperties', 'scene-name': scene, item: { id: e.itemId } });
+      });
+      const GetProperties = await obs.send('ExecuteBatch', { requests: GetSourceArray });
+      if (GetProperties.results[0].error) { throw (GetProperties.results[0].error); }
+      GetProperties.results.forEach((e) => {
+        const itemScale = (SceneArray.includes(e.itemId)) ? 1 : scale;
+        const cropScale = (SceneArray.includes(e.itemId)) ? scale : 1;
+        SetSourceArray.push({
+          'request-type': 'SetSceneItemProperties',
+          'scene-name': scene,
+          item: { id: e.itemId },
+          position: { x: e.position.x * scale, y: e.position.y * scale },
+          scale: { x: e.scale.x * itemScale, y: e.scale.y * itemScale },
+          bounds: { x: e.bounds.x * scale, y: e.bounds.y * scale },
+          crop: {
+            bottom: e.crop.bottom * cropScale, left: e.crop.left * cropScale, right: e.crop.right * cropScale, top: e.crop.top * cropScale,
+          },
+        });
+  	    });
+      const SetProperties = await obs.send('ExecuteBatch', { requests: SetSourceArray });
+      if (SetProperties.results[0].error) throw SetProperties.results[0].error;
+    }
+
+    async function moveFilters(items) {
+      const GetFilterSettings = [];
+      const SetFilterSettings = [];
+      items.filters.forEach((e) => {
+        if (e.type === 'move_source_filter') GetFilterSettings.push({ 'request-type': 'GetSourceFilterInfo', sourceName: scene, filterName: e.name });
+      });
+      const GetSettings = await obs.send('ExecuteBatch', { requests: GetFilterSettings });
+      if (GetSettings.results.length === 0) return;
+      if (GetSettings.results[0].error) throw (GetSettings.results[0].error);
+      GetSettings.results.forEach((e) => {
+        console.log(e)
+        const moveScale = (scene === sceneName) ? 1 : scale;
+        SetFilterSettings.push({
+          'request-type': 'SetSourceFilterSettings',
+          sourceName: scene,
+          filterName: e.name,
+          filterSettings: {
+            pos: {
+              x: e.settings.pos.x * scale, x_sign: ' ', y: e.settings.pos.y * scale, y_sign: ' ',
+            },
+            scale: {
+              x: e.settings.scale.x * moveScale, x_sign: ' ', y: e.settings.scale.y * moveScale, y_sign: ' ',
+            },
+            crop: {
+              top: e.settings.crop.top * scale, bottom: e.settings.crop.bottom * scale, left: e.settings.crop.left * scale, right: e.settings.crop.right * scale,
+            },
+            bounds: {
+              x: e.settings.bounds.x * scale,
+              x_sign: ' ',
+              y: e.settings.bounds.y * scale,
+              y_sign: ' ',
+            },
+            transform_text: `pos: x ${e.settings.pos.x * scale} y ${e.settings.pos.y * scale} rot: ${e.settings.rot} bounds: x ${e.settings.bounds.x * scale} y ${e.settings.bounds.y * scale} scale: x ${e.settings.scale.x * scale} y ${e.settings.scale.y * scale} crop: l ${e.settings.crop.left * scale} t ${e.settings.crop.top * scale} r ${e.settings.crop.right * scale} b ${e.settings.crop.bottom * scale}`,
+          },
+
+        });
+      });
+      const SetSettings = await obs.send('ExecuteBatch', { requests: SetFilterSettings });
+      if (SetSettings.results[0].error) throw (SetSettings.results[0].error);
+    }
+
+    async function cropFilters(items) {
+      console.log(items);
+      const GetFilterSettings = [];
+      const SetFilterSettings = [];
+	  items.filters.forEach((e) => {
+        if (e.type === 'crop_filter') GetFilterSettings.push({ 'request-type': 'GetSourceFilterInfo', sourceName: scene, filterName: e.name });
+      });
+      const GetSettings = await obs.send('ExecuteBatch', { requests: GetFilterSettings });
+	  console.log(GetSettings);
+	  if (GetSettings.results.length === 0) return;
+      if (GetSettings.results[0].error) throw (GetSettings.results[0].error);
+      GetSettings.results.forEach((e) => {
+        SetFilterSettings.push({
+          'request-type': 'SetSourceFilterSettings',
+          sourceName: scene,
+          filterName: e.name,
+		  filterSettings: {
+            top: e.settings.top * scale, bottom: e.settings.bottom * scale, left: e.settings.left * scale, right: e.settings.right * scale,
+          },
+        });
+      });
+      const SetSettings = await obs.send('ExecuteBatch', { requests: SetFilterSettings });
+      if (SetSettings.results[0].error) throw (SetSettings.results[0].error);
+    }
+  }
+
+  function StartListening() {
+    obs.connect({ address: `localhost:${port}`, password: pw })
+      .catch((e) => {
+        ChangeStatus(e.error);
+        obs.disconnect();
+      });
+
+    obs.on('AuthenticationSuccess', () => {
+      RequestInfo(sceneName);
+      setTimeout(() => {
+        obs.removeAllListeners();
+        obs.disconnect();
+      }, 10000);
+    });
+
+    obs.on('ConnectionClosed', () => {
+      ChangeStatus('Connection closed.');
+    });
+
+    obs.on('error', (e) => {
+      ChangeStatus(e);
+      obs.disconnect();
+    });
+  }
+
+  function ChangeStatus(msg) {
+    console.log(msg);
+    lioranboardclient.send(`{"type":"MESSAGE","topic":"AlertMessage","message":"OBS Resize: ${msg}"}`);
+  }
+}
+[insert_over]
+[buttons_1x0]
+activepress="0.000000"
+border_size="0.000000"
+combine="0.000000"
+type="websocketaction+"
+picture=""
+text="Reset"
+color="4474111.000000"
+button_id="ID81"
+websocketdelay3="0.000000"
+websocketvalue8_3=""
+websocketvalue7_3=""
+websocketvalue6_3=""
+websocketvalue5_3="notext"
+websocketvalue4_3="-1"
+websocketvalue3_3="-1"
+websocketvalue2_3="-1"
+websocketvalue1_3="OBSResize"
+websocketaction3="63.000000"
+websocketdelay2="0.000000"
+websocketvalue8_2=""
+websocketvalue7_2=""
+websocketvalue6_2=""
+websocketvalue5_2=""
+websocketvalue4_2=""
+websocketvalue3_2="0"
+websocketvalue2_2="="
+websocketvalue1_2="ResizeProceed"
+websocketaction2="127.000000"
+websocketdelay1="0.000000"
+websocketvalue8_1=""
+websocketvalue7_1=""
+websocketvalue6_1=""
+websocketvalue5_1=""
+websocketvalue4_1=""
+websocketvalue3_1=""
+websocketvalue2_1=""
+websocketvalue1_1="you can reset the Resize button to its original state by pressing this button. "
+websocketaction1="92.000000"
+websocketdelay0="0.000000"
+websocketvalue8_0=""
+websocketvalue7_0=""
+websocketvalue6_0=""
+websocketvalue5_0=""
+websocketvalue4_0=""
+websocketvalue3_0=""
+websocketvalue2_0=""
+websocketvalue1_0="What is this button for? If you get a popup message warning you about resolution settings  -->"
+websocketaction0="92.000000"
+[buttons_0x0]
+activepress="0.000000"
+border_size="0.000000"
+combine="0.000000"
+type="websocketaction+pubsubaction+"
+picture=""
+text="Resize"
+color="16766806.000000"
+button_id="OBSResize"
+extensiontrigger0="OBSResize"
+pubsubaction0="7.000000"
+pubsubqueue="0.000000"
+websocketdelay33="500.000000"
+websocketvalue8_33=""
+websocketvalue7_33=""
+websocketvalue6_33=""
+websocketvalue5_33="notext"
+websocketvalue4_33="-1"
+websocketvalue3_33="-1"
+websocketvalue2_33="-1"
+websocketvalue1_33="OBSResize"
+websocketaction33="63.000000"
+websocketdelay32="500.000000"
+websocketvalue8_32=""
+websocketvalue7_32="/$ResizeScenes$/"
+websocketvalue6_32="/$NewWidth$/"
+websocketvalue5_32="/$OrigWidth$/"
+websocketvalue4_32="/$SceneResize$/"
+websocketvalue3_32="/$obsws_pw$/"
+websocketvalue2_32="/$obsws_port$/"
+websocketvalue1_32="OBS Resizer"
+websocketaction32="71.000000"
+websocketdelay31="500.000000"
+websocketvalue8_31=""
+websocketvalue7_31=""
+websocketvalue6_31=""
+websocketvalue5_31="Press again # to proceed"
+websocketvalue4_31="0"
+websocketvalue3_31="142"
+websocketvalue2_31="255"
+websocketvalue1_31="OBSResize"
+websocketaction31="63.000000"
+websocketdelay30="500.000000"
+websocketvalue8_30=""
+websocketvalue7_30=""
+websocketvalue6_30=""
+websocketvalue5_30=""
+websocketvalue4_30=""
+websocketvalue3_30="1"
+websocketvalue2_30="="
+websocketvalue1_30="ResizeProceed"
+websocketaction30="127.000000"
+websocketdelay29="500.000000"
+websocketvalue8_29=""
+websocketvalue7_29=""
+websocketvalue6_29=""
+websocketvalue5_29=""
+websocketvalue4_29=""
+websocketvalue3_29=""
+websocketvalue2_29=""
+websocketvalue1_29="Our records indicate the original width is /$OrigWidthCheck$/. Press the button again to proceed with /$OrigWidth$/ or change your settings. "
+websocketaction29="118.000000"
+websocketdelay28="500.000000"
+websocketvalue8_28=""
+websocketvalue7_28=""
+websocketvalue6_28=""
+websocketvalue5_28="notext"
+websocketvalue4_28="-1"
+websocketvalue3_28="-1"
+websocketvalue2_28="-1"
+websocketvalue1_28="OBSResize"
+websocketaction28="63.000000"
+websocketdelay27="500.000000"
+websocketvalue8_27=""
+websocketvalue7_27=""
+websocketvalue6_27=""
+websocketvalue5_27=""
+websocketvalue4_27=""
+websocketvalue3_27=""
+websocketvalue2_27=""
+websocketvalue1_27="ResizeProceed"
+websocketaction27="60.000000"
+websocketdelay26="500.000000"
+websocketvalue8_26=""
+websocketvalue7_26="/$ResizeScenes$/"
+websocketvalue6_26="/$NewWidth$/"
+websocketvalue5_26="/$OrigWidth$/"
+websocketvalue4_26="/$SceneResize$/"
+websocketvalue3_26="/$obsws_pw$/"
+websocketvalue2_26="/$obsws_port$/"
+websocketvalue1_26="OBS Resizer"
+websocketaction26="71.000000"
+websocketdelay25="500.000000"
+websocketvalue8_25=""
+websocketvalue7_25=""
+websocketvalue6_25=""
+websocketvalue5_25="3"
+websocketvalue4_25="3"
+websocketvalue3_25="1"
+websocketvalue2_25="=="
+websocketvalue1_25="ResizeProceed"
+websocketaction25="121.000000"
+websocketdelay24="0.000000"
+websocketvalue8_24=""
+websocketvalue7_24=""
+websocketvalue6_24=""
+websocketvalue5_24=""
+websocketvalue4_24=""
+websocketvalue3_24="OrigWidth"
+websocketvalue2_24="!="
+websocketvalue1_24="OrigWidthCheck"
+websocketaction24="123.000000"
+websocketdelay23="500.000000"
+websocketvalue8_23=""
+websocketvalue7_23=""
+websocketvalue6_23=""
+websocketvalue5_23="2"
+websocketvalue4_23="8"
+websocketvalue3_23="0"
+websocketvalue2_23="!="
+websocketvalue1_23="OrigWidthCheck"
+websocketaction23="121.000000"
+websocketdelay22="500.000000"
+websocketvalue8_22=""
+websocketvalue7_22=""
+websocketvalue6_22=""
+websocketvalue5_22=""
+websocketvalue4_22=""
+websocketvalue3_22=""
+websocketvalue2_22=""
+websocketvalue1_22=""
+websocketaction22="126.000000"
+websocketdelay21="500.000000"
+websocketvalue8_21=""
+websocketvalue7_21=""
+websocketvalue6_21=""
+websocketvalue5_21=""
+websocketvalue4_21=""
+websocketvalue3_21=""
+websocketvalue2_21=""
+websocketvalue1_21="OBS Resizer Error: You're not connected to OBS! "
+websocketaction21="118.000000"
+websocketdelay20="500.000000"
+websocketvalue8_20=""
+websocketvalue7_20=""
+websocketvalue6_20=""
+websocketvalue5_20="0"
+websocketvalue4_20="2"
+websocketvalue3_20="0"
+websocketvalue2_20="=="
+websocketvalue1_20="NewWidth"
+websocketaction20="121.000000"
+websocketdelay19="0.000000"
+websocketvalue8_19=""
+websocketvalue7_19=""
+websocketvalue6_19=""
+websocketvalue5_19=""
+websocketvalue4_19="true"
+websocketvalue3_19="OrigWidthCheck"
+websocketvalue2_19="sourceSettings.OrigRes"
+websocketvalue1_19="{þrequest-typeþ:þGetSourceSettingsþ,þsourceNameþ:þ/$SceneResize$/þ}"
+websocketaction19="70.000000"
+websocketdelay18="0.000000"
+websocketvalue8_18=""
+websocketvalue7_18=""
+websocketvalue6_18=""
+websocketvalue5_18=""
+websocketvalue4_18="true"
+websocketvalue3_18="NewWidth"
+websocketvalue2_18="baseWidth"
+websocketvalue1_18="{þrequest-typeþ:þGetVideoInfoþ}"
+websocketaction18="70.000000"
+websocketdelay17="0.000000"
+websocketvalue8_17=""
+websocketvalue7_17=""
+websocketvalue6_17=""
+websocketvalue5_17=""
+websocketvalue4_17=""
+websocketvalue3_17=""
+websocketvalue2_17=""
+websocketvalue1_17="OrigWidthCheck"
+websocketaction17="60.000000"
+websocketdelay16="0.000000"
+websocketvalue8_16=""
+websocketvalue7_16=""
+websocketvalue6_16=""
+websocketvalue5_16=""
+websocketvalue4_16=""
+websocketvalue3_16=""
+websocketvalue2_16=""
+websocketvalue1_16="END OF EDITABLE VARIABLES, DO NOT MODIFY BELOW"
+websocketaction16="92.000000"
+websocketdelay15="0.000000"
+websocketvalue8_15=""
+websocketvalue7_15=""
+websocketvalue6_15=""
+websocketvalue5_15=""
+websocketvalue4_15=""
+websocketvalue3_15=""
+websocketvalue2_15=""
+websocketvalue1_15="with your manually entered width if you're sure it's correct. This is just a safety net in case of any typos."
+websocketaction15="92.000000"
+websocketdelay14="0.000000"
+websocketvalue8_14=""
+websocketvalue7_14=""
+websocketvalue6_14=""
+websocketvalue5_14=""
+websocketvalue4_14=""
+websocketvalue3_14=""
+websocketvalue2_14=""
+websocketvalue1_14="to edit the width value to match the one in the popup message, or press the button again to proceed"
+websocketaction14="92.000000"
+websocketdelay13="0.000000"
+websocketvalue8_13=""
+websocketvalue7_13=""
+websocketvalue6_13=""
+websocketvalue5_13=""
+websocketvalue4_13=""
+websocketvalue3_13=""
+websocketvalue2_13=""
+websocketvalue1_13="different from what you manually entered, you might get a popup warning message. You can choose -->"
+websocketaction13="92.000000"
+websocketdelay12="0.000000"
+websocketvalue8_12=""
+websocketvalue7_12=""
+websocketvalue6_12=""
+websocketvalue5_12=""
+websocketvalue4_12=""
+websocketvalue3_12=""
+websocketvalue2_12=""
+websocketvalue1_12="The extension automatically saves the last width you resized the scene to. If the saved value is -->"
+websocketaction12="92.000000"
+websocketdelay11="0.000000"
+websocketvalue8_11=""
+websocketvalue7_11=""
+websocketvalue6_11=""
+websocketvalue5_11=""
+websocketvalue4_11=""
+websocketvalue3_11="þþ"
+websocketvalue2_11="="
+websocketvalue1_11="obsws_pw"
+websocketaction11="127.000000"
+websocketdelay10="0.000000"
+websocketvalue8_10=""
+websocketvalue7_10=""
+websocketvalue6_10=""
+websocketvalue5_10=""
+websocketvalue4_10=""
+websocketvalue3_10=""
+websocketvalue2_10=""
+websocketvalue1_10="OBS Websocket Password. Leave empty if you have no password."
+websocketaction10="92.000000"
+websocketdelay9="0.000000"
+websocketvalue8_9=""
+websocketvalue7_9=""
+websocketvalue6_9=""
+websocketvalue5_9=""
+websocketvalue4_9=""
+websocketvalue3_9="4444"
+websocketvalue2_9="="
+websocketvalue1_9="obsws_port"
+websocketaction9="127.000000"
+websocketdelay8="0.000000"
+websocketvalue8_8=""
+websocketvalue7_8=""
+websocketvalue6_8=""
+websocketvalue5_8=""
+websocketvalue4_8=""
+websocketvalue3_8=""
+websocketvalue2_8=""
+websocketvalue1_8="OBS Websocket Port. Default is 4444."
+websocketaction8="92.000000"
+websocketdelay7="0.000000"
+websocketvalue8_7=""
+websocketvalue7_7=""
+websocketvalue6_7=""
+websocketvalue5_7=""
+websocketvalue4_7=""
+websocketvalue3_7=""
+websocketvalue2_7=""
+websocketvalue1_7="(your current canvas width you're resizing the scene to will be automatically pulled from OBS) "
+websocketaction7="92.000000"
+websocketdelay6="0.000000"
+websocketvalue8_6=""
+websocketvalue7_6=""
+websocketvalue6_6=""
+websocketvalue5_6=""
+websocketvalue4_6=""
+websocketvalue3_6="1920"
+websocketvalue2_6="="
+websocketvalue1_6="OrigWidth"
+websocketaction6="127.000000"
+websocketdelay5="0.000000"
+websocketvalue8_5=""
+websocketvalue7_5=""
+websocketvalue6_5=""
+websocketvalue5_5=""
+websocketvalue4_5=""
+websocketvalue3_5=""
+websocketvalue2_5=""
+websocketvalue1_5="Original canvas WIDTH you're resizing the scene from. 1080p = 1920 width, 720p = 1280 width etc. "
+websocketaction5="92.000000"
+websocketdelay4="0.000000"
+websocketvalue8_4=""
+websocketvalue7_4=""
+websocketvalue6_4=""
+websocketvalue5_4=""
+websocketvalue4_4=""
+websocketvalue3_4="þyour scene nameþ"
+websocketvalue2_4="="
+websocketvalue1_4="SceneResize"
+websocketaction4="127.000000"
+websocketdelay3="0.000000"
+websocketvalue8_3=""
+websocketvalue7_3=""
+websocketvalue6_3=""
+websocketvalue5_3=""
+websocketvalue4_3=""
+websocketvalue3_3=""
+websocketvalue2_3=""
+websocketvalue1_3="Scene name you wish to resize all sources/nested scenes in: "
+websocketaction3="92.000000"
+websocketdelay2="0.000000"
+websocketvalue8_2=""
+websocketvalue7_2=""
+websocketvalue6_2=""
+websocketvalue5_2=""
+websocketvalue4_2=""
+websocketvalue3_2=""
+websocketvalue2_2=""
+websocketvalue1_2="Depending on the amount of sources, it might take some time to execute. "
+websocketaction2="92.000000"
+websocketdelay1="0.000000"
+websocketvalue8_1=""
+websocketvalue7_1=""
+websocketvalue6_1=""
+websocketvalue5_1=""
+websocketvalue4_1=""
+websocketvalue3_1=""
+websocketvalue2_1=""
+websocketvalue1_1="It should also properly resize move and crop filters. User defined shaders will not be changed. "
+websocketaction1="92.000000"
+websocketdelay0="0.000000"
+websocketvalue8_0=""
+websocketvalue7_0=""
+websocketvalue6_0=""
+websocketvalue5_0=""
+websocketvalue4_0=""
+websocketvalue3_0=""
+websocketvalue2_0=""
+websocketvalue1_0="Pressing this button will resize the selected scene's sources, nested scenes and their sources. "
+websocketaction0="92.000000"
+[configs]
+name="OBS Resizer"
+background_color="8947848.000000"
+grid_height="2.000000"
+grid_width="2.000000"
