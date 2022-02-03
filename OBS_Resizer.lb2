@@ -1,0 +1,175 @@
+[extension_name]
+OBS Resizer
+[extension_info]
+OBS Resizer
+[insert_external]
+<!--
+ * @name: OBS Resizer, @version: 1.0, @author: Christinna#9031
+ * -->
+<div><p>OBS Resizer is installed</p></div>
+ <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/obs-websocket-js@4.0.2/dist/obs-websocket.js"></script>
+[insert_command]
+LB.extCommand('OBS Resizer', 3355443, 52, {
+obsws_port: ['obsws_port', 14, ''],
+obsws_password: ['obsws_password', 14, ''],
+scene_name: ['scene_name', 14, ''],
+original_width: ['original_width', 14, ''],
+new_width: ['new_width', 14, ''],
+})
+[insert_hook]
+case "OBS Resizer":{  
+    LBResizeAll (LioranBoardJSON.obsws_port, LioranBoardJSON.obsws_password, LioranBoardJSON.scene_name, LioranBoardJSON.original_width, LioranBoardJSON.new_width)
+    }break
+[insert_script]
+function LBResizeAll(port, pw, sceneName, origRes, newRes) {
+  const scale = newRes / origRes;
+  const obs = new OBSWebSocket();
+
+  StartListening();
+
+  async function RequestInfo(scene) {
+    const GetItems = await obs.send('ExecuteBatch', { requests: [{ 'request-type': 'GetSceneItemList', sceneName: scene }, { 'request-type': 'GetSourceFilters', sourceName: scene }] });
+    if (GetItems.results[0].error || GetItems.results[1].error) {
+      ChangeStatus(GetItems.results[0].error || GetItems.results[1].error); return;
+    }
+    Promise.all([transformSources(GetItems.results[0]), moveFilters(GetItems.results[1]), cropFilters(GetItems.results[1])])
+      .then(() => {
+        obs.send('SetSourceSettings', { sourceName: scene, sourceSettings: { OrigRes: newRes } });
+      })
+      .catch((e) => ChangeStatus(e));
+
+    async function transformSources(data) {
+      const GetSourceArray = [];
+      const SetSourceArray = [];
+	  const SceneArray = [];
+      if (data.sceneItems.length === 0) return;
+      data.sceneItems.forEach((e) => {
+        if (e.sourceKind === 'scene') {
+         
+          SceneArray.push(e.itemId);
+		  setTimeout(() => {
+		  RequestInfo(e.sourceName);
+		  }, 100);
+        }
+        GetSourceArray.push({ 'request-type': 'GetSceneItemProperties', 'scene-name': scene, item: { id: e.itemId } });
+      });
+      const GetProperties = await obs.send('ExecuteBatch', { requests: GetSourceArray });
+      if (GetProperties.results[0].error) { throw (GetProperties.results[0].error); }
+      GetProperties.results.forEach((e) => {
+        const itemScale = (SceneArray.includes(e.itemId)) ? 1 : scale;
+        const cropScale = (SceneArray.includes(e.itemId)) ? scale : 1;
+        SetSourceArray.push({
+          'request-type': 'SetSceneItemProperties',
+          'scene-name': scene,
+          item: { id: e.itemId },
+          position: { x: e.position.x * scale, y: e.position.y * scale },
+          scale: { x: e.scale.x * itemScale, y: e.scale.y * itemScale },
+          bounds: { x: e.bounds.x * scale, y: e.bounds.y * scale },
+          crop: {
+            bottom: e.crop.bottom * cropScale, left: e.crop.left * cropScale, right: e.crop.right * cropScale, top: e.crop.top * cropScale,
+          },
+        });
+  	    });
+      const SetProperties = await obs.send('ExecuteBatch', { requests: SetSourceArray });
+      if (SetProperties.results[0].error) throw SetProperties.results[0].error;
+    }
+
+    async function moveFilters(items) {
+      const GetFilterSettings = [];
+      const SetFilterSettings = [];
+      items.filters.forEach((e) => {
+        if (e.type === 'move_source_filter') GetFilterSettings.push({ 'request-type': 'GetSourceFilterInfo', sourceName: scene, filterName: e.name });
+      });
+      const GetSettings = await obs.send('ExecuteBatch', { requests: GetFilterSettings });
+      if (GetSettings.results.length === 0) return;
+      if (GetSettings.results[0].error) throw (GetSettings.results[0].error);
+      GetSettings.results.forEach((e) => {
+        console.log(e)
+        const moveScale = (scene === sceneName) ? 1 : scale;
+        SetFilterSettings.push({
+          'request-type': 'SetSourceFilterSettings',
+          sourceName: scene,
+          filterName: e.name,
+          filterSettings: {
+            pos: {
+              x: e.settings.pos.x * scale, x_sign: ' ', y: e.settings.pos.y * scale, y_sign: ' ',
+            },
+            scale: {
+              x: e.settings.scale.x * moveScale, x_sign: ' ', y: e.settings.scale.y * moveScale, y_sign: ' ',
+            },
+            crop: {
+              top: e.settings.crop.top * scale, bottom: e.settings.crop.bottom * scale, left: e.settings.crop.left * scale, right: e.settings.crop.right * scale,
+            },
+            bounds: {
+              x: e.settings.bounds.x * scale,
+              x_sign: ' ',
+              y: e.settings.bounds.y * scale,
+              y_sign: ' ',
+            },
+            transform_text: `pos: x ${e.settings.pos.x * scale} y ${e.settings.pos.y * scale} rot: ${e.settings.rot} bounds: x ${e.settings.bounds.x * scale} y ${e.settings.bounds.y * scale} scale: x ${e.settings.scale.x * scale} y ${e.settings.scale.y * scale} crop: l ${e.settings.crop.left * scale} t ${e.settings.crop.top * scale} r ${e.settings.crop.right * scale} b ${e.settings.crop.bottom * scale}`,
+          },
+
+        });
+      });
+      const SetSettings = await obs.send('ExecuteBatch', { requests: SetFilterSettings });
+      if (SetSettings.results[0].error) throw (SetSettings.results[0].error);
+    }
+
+    async function cropFilters(items) {
+      console.log(items);
+      const GetFilterSettings = [];
+      const SetFilterSettings = [];
+	  items.filters.forEach((e) => {
+        if (e.type === 'crop_filter') GetFilterSettings.push({ 'request-type': 'GetSourceFilterInfo', sourceName: scene, filterName: e.name });
+      });
+      const GetSettings = await obs.send('ExecuteBatch', { requests: GetFilterSettings });
+	  console.log(GetSettings);
+	  if (GetSettings.results.length === 0) return;
+      if (GetSettings.results[0].error) throw (GetSettings.results[0].error);
+      GetSettings.results.forEach((e) => {
+        SetFilterSettings.push({
+          'request-type': 'SetSourceFilterSettings',
+          sourceName: scene,
+          filterName: e.name,
+		  filterSettings: {
+            top: e.settings.top * scale, bottom: e.settings.bottom * scale, left: e.settings.left * scale, right: e.settings.right * scale,
+          },
+        });
+      });
+      const SetSettings = await obs.send('ExecuteBatch', { requests: SetFilterSettings });
+      if (SetSettings.results[0].error) throw (SetSettings.results[0].error);
+    }
+  }
+
+  function StartListening() {
+    obs.connect({ address: `localhost:${port}`, password: pw })
+      .catch((e) => {
+        ChangeStatus(e.error);
+        obs.disconnect();
+      });
+
+    obs.on('AuthenticationSuccess', () => {
+      RequestInfo(sceneName);
+      setTimeout(() => {
+        obs.removeAllListeners();
+        obs.disconnect();
+      }, 10000);
+    });
+
+    obs.on('ConnectionClosed', () => {
+      ChangeStatus('Connection closed.');
+    });
+
+    obs.on('error', (e) => {
+      ChangeStatus(e);
+      obs.disconnect();
+    });
+  }
+
+  function ChangeStatus(msg) {
+    console.log(msg);
+    LB.alert('OBS Resize: ' + msg );
+  }
+}
+[insert_over]
+{ "deck_data": "{ \"background_color\": 4210752.0, \"on\": 1.0, \"grid_y\": 1.0, \"snap_grid\": true, \"lb_version\": \"2.05.3\", \"background_image\": \"\", \"encrypted\": 0.0, \"adaptive_resizing\": true, \"unique_id\": \"20220131133513967739958\", \"button_list\": [ { \"color\": 16766806.0, \"persistent\": true, \"text\": \"Resize\", \"release_duration\": 0.0, \"queueable\": false, \"command_list\": [ { \"cmd\": 4.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 38.0, \"b0\": \"Pressing this button will resize the selected scene sources, nested scenes and their sources.\\nIt should also properly resize move and crop filters. User defined shaders will not be changed.\\nDepending on the amount of sources, it might take some time to execute. \", \"v0\": 0.0 }, { \"cmd\": 4.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 81.0, \"b0\": \"The extension automatically saves the last width you resized the scene to. If the saved value\\nis different from what you manually entered, you might get a popup warning message. You \\ncan choose to edit the width value to match the one in the popup message, or press the button \\nagain to proceed with your manually entered width if you're sure it's correct. This is just a \\nsafety net in case of any typos.\", \"v0\": 0.0 }, { \"cmd\": 5.0, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Asking information from the sources\\\/nested scenes you wish to resize: \", \"v0\": 6.0 }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 5.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 3.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"ResizeProceed\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"1\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 0.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b1\": \"Main\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 4.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Enter the name of your OBS instance. Default : Main\", \"b2\": \"obsInstance\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 5.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Scene name you wish to resize all sources\\\/nested scenes in: \", \"b2\": \"SceneResize\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 6.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Original canvas WIDTH you're resizing the scene from. 1080p = 1920, 720p = 1280 etc. \", \"b2\": \"OrigWidth\" }, { \"b1\": \"4444\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 7.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBS Websocket Port. Default is 4444: \", \"b2\": \"obsws_port\" }, { \"b1\": \"\", \"cmd\": 214.0, \"obsid\": \"Main\", \"pos\": 8.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBS Websocket Password. Leave empty if you have no password.\", \"b2\": \"obsws_pw\" }, { \"cmd\": 78.0, \"obsid\": \"Main\", \"pos\": 9.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OrigWidthCheck\" }, { \"b1\": \"baseWidth\", \"cmd\": 65.0, \"obsid\": \"\\\/$obsInstance$\\\/\", \"pos\": 10.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"{\\\"request-type\\\":\\\"GetVideoInfo\\\"}\", \"b2\": \"NewWidth\" }, { \"b1\": \"sourceSettings.OrigRes\", \"cmd\": 65.0, \"obsid\": \"\\\/$obsInstance$\\\/\", \"pos\": 11.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"{\\\"request-type\\\":\\\"GetSourceSettings\\\",\\\"sourceName\\\":\\\"\\\/$SceneResize$\\\/\\\"}\", \"b2\": \"OrigWidthCheck\" }, { \"b1\": \"1000\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 12.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"NewWidth\" }, { \"b1\": \"1000\", \"cmd\": 153.0, \"obsid\": \"Main\", \"pos\": 13.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OrigWidthCheck\" }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 14.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"NewWidth\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"0\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 2.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 15.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBS Resizer Error: You're not connected to OBS! \", \"v0\": false }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 12.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 16.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b53\": \"\", \"b5\": \"OrigWidth\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"!=\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"OrigWidthCheck\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 2.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 17.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 25.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"OrigWidthCheck\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"!=\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"0\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 1.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 7.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 2.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"b53\": \"\", \"b5\": \"\", \"b13\": \"==\", \"v14\": 0.0, \"b36\": \"\", \"b38\": \"\", \"v10\": 0.0, \"b32\": \"\", \"b19\": \"==\", \"b57\": \"\", \"b59\": \"\", \"b17\": \"\", \"b1\": \"==\", \"v18\": 0.0, \"v16\": 0.0, \"b34\": \"==\", \"b7\": \"==\", \"b11\": \"\", \"b9\": \"\", \"b51\": \"\", \"b15\": \"\", \"b3\": \"\", \"b55\": \"==\", \"v12\": 0.0, \"cmd\": 7.0, \"b30\": \"\", \"b43\": \"==\", \"v21\": 0.0, \"v1\": 3.0, \"b26\": \"\", \"b28\": \"==\", \"obsid\": \"Main\", \"b22\": \"==\", \"pos\": 18.0, \"v5\": 0.0, \"b47\": \"\", \"b49\": \"==\", \"v3\": 0.0, \"vis\": 1.0, \"b24\": \"\", \"ms\": 0.0, \"b41\": \"\", \"sel\": 0.0, \"b45\": \"\", \"v9\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b20\": \"\", \"v7\": 0.0, \"b33\": \"\", \"v11\": 0.0, \"b16\": \"==\", \"b0\": \"ResizeProceed\", \"b58\": \"==\", \"b56\": \"\", \"b18\": \"\", \"b4\": \"==\", \"b12\": \"\", \"b52\": \"==\", \"b39\": \"\", \"b37\": \"==\", \"v15\": 0.0, \"b54\": \"\", \"b14\": \"\", \"b2\": \"1\", \"b31\": \"==\", \"v13\": 0.0, \"b35\": \"\", \"v17\": 0.0, \"v19\": 0.0, \"b50\": \"\", \"b8\": \"\", \"b6\": \"\", \"b10\": \"==\", \"b23\": \"\", \"v4\": 0.0, \"b48\": \"\", \"b46\": \"==\", \"v20\": 0.0, \"b42\": \"\", \"b29\": \"\", \"v0\": 3.0, \"b27\": \"\", \"b44\": \"\", \"b21\": \"\", \"v6\": 0.0, \"v8\": 0.0, \"v2\": 1.0, \"b25\": \"==\", \"b40\": \"==\", \"v22\": 0.0 }, { \"obsws_password\": \"\\\/$obsws_pw$\\\/\", \"new_width\": \"\\\/$NewWidth$\\\/\", \"original_width\": \"\\\/$OrigWidth$\\\/\", \"obsws_port\": \"\\\/$obsws_port$\\\/\", \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 19.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"OBS Resizer\", \"ext\": \"Transmitter\", \"scene_name\": \"\\\/$SceneResize$\\\/\" }, { \"cmd\": 78.0, \"obsid\": \"Main\", \"pos\": 20.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"ResizeProceed\" }, { \"b1\": \"-default-\", \"cmd\": 28.0, \"v1\": false, \"obsid\": \"Main\", \"pos\": 21.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBSResize\", \"b2\": \"\", \"v0\": -1.0, \"v2\": 211.0 }, { \"cmd\": 141.0, \"obsid\": \"Main\", \"pos\": 22.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"Our records indicate the original width is \\\/$OrigWidthCheck$\\\/. Press the button again to proceed with \\\/$OrigWidth$\\\/ or change your settings. \", \"v0\": false }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 23.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"ResizeProceed\", \"b2\": \"1\" }, { \"b1\": \"Press again\\nto proceed\", \"cmd\": 28.0, \"v1\": true, \"obsid\": \"Main\", \"pos\": 24.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBSResize\", \"b2\": \"\", \"v0\": -1.0, \"v2\": 36607.0 }, { \"obsws_password\": \"\\\/$obsws_pw$\\\/\", \"new_width\": \"\\\/$NewWidth$\\\/\", \"original_width\": \"\\\/$OrigWidth$\\\/\", \"obsws_port\": \"\\\/$obsws_port$\\\/\", \"cmd\": 0.0, \"obsid\": \"Main\", \"pos\": 25.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"extcmd\": \"OBS Resizer\", \"ext\": \"Transmitter\", \"scene_name\": \"\\\/$SceneResize$\\\/\" }, { \"b1\": \"-default-\", \"cmd\": 28.0, \"v1\": false, \"obsid\": \"Main\", \"pos\": 26.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBSResize\", \"b2\": \"\", \"v0\": -1.0, \"v2\": 211.0 } ], \"press_type\": 0.0, \"x\": 0.0, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": false, \"init_variable\": \"\", \"deck\": 18.0, \"width\": 0.5, \"button_id\": \"OBSResize\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 1.0, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": 0.0 }, { \"color\": 4474111.0, \"persistent\": true, \"text\": \"Reset\", \"release_duration\": 0.0, \"queueable\": false, \"command_list\": [ { \"cmd\": 6.0, \"obsid\": \"Main\", \"pos\": 0.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 16.0, \"b0\": \"What is this button for? If you get a popup message warning you about resolution settings  -->\\nyou can reset the Resize button to its original state by pressing this button. \", \"v0\": 2.0 }, { \"b1\": \"=\", \"cmd\": 15.0, \"obsid\": \"Main\", \"pos\": 1.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"ResizeProceed\", \"b2\": \"0\" }, { \"b1\": \"-default-\", \"cmd\": 28.0, \"v1\": false, \"obsid\": \"Main\", \"pos\": 2.0, \"vis\": 1.0, \"ms\": 0.0, \"sel\": 0.0, \"dis\": 0.0, \"xpan\": 0.0, \"b0\": \"OBSResize\", \"b2\": \"\", \"v0\": -1.0, \"v2\": 211.0 } ], \"press_type\": 0.0, \"x\": 0.5, \"border\": 2.0, \"image\": \"\", \"triggers\": [ ], \"group_id\": \"\", \"overlappable\": false, \"init_variable\": \"\", \"deck\": 18.0, \"width\": 0.5, \"button_id\": \"OBSReset\", \"button_duration\": 0.0, \"y\": 0.0, \"switch_deck\": \"\", \"height\": 1.0, \"release_list\": [ ], \"functions\": 65.0, \"stretch\": false } ], \"deck_name\": \"OBS Resizer\", \"grid_x\": 2.0, \"stretch\": 0.0 }", "unique_id": "20220131133513967739958", "deck_verification_code": "3beef0438ddfebbbb37d0767b15b9ebe23aa7ad5", "include_image": { } }
