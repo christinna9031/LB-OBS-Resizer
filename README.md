@@ -1,4 +1,6 @@
-OBS Resizer allows you to resize your scenes, nested scenes and their sources with one push of a button.   
+OBS Resizer allows you to resize your scenes, nested scenes and their sources with one push of a button. 
+
+**Special thanks goes to [MisterK](twitch.tv/misterk_qc) for migrating the extension to LioranBoard 2.**   
 
 This is extremely useful if you decide to switch to a different video resolution or you often create and share your scene collections with other people who  need them for a different resolution.   
 
